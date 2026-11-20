@@ -1,0 +1,13 @@
+COMO OBTENER EL APK (sin instalar nada en la PC)
+
+1. Creá una cuenta gratis en github.com e iniciá sesión.
+2. Tocá "New repository", poné un nombre (por ejemplo lector-hikvision) y creá el repositorio.
+3. Tocá "uploading an existing file" y arrastrá TODO el contenido de esta carpeta,
+   incluida la carpeta oculta ".github". Después tocá "Commit changes".
+   Si ".github" no se sube, creá el archivo a mano: "Add file" > "Create new file",
+   nombre  .github/workflows/apk.yml  y pegá el contenido de ese archivo.
+4. Entrá a la pestaña "Actions". Se va a ejecutar "Compilar APK" (tarda unos 5 a 10 minutos).
+   Si no arranca solo, elegí "Compilar APK" > "Run workflow".
+5. Cuando termine con tilde verde, abrí esa ejecución y bajá "lector-hikvision-apk"
+   (abajo, en "Artifacts"). Adentro del zip está app-debug.apk.
+6. Pasalo al celular, abrilo y permití "instalar apps de origen desconocido".

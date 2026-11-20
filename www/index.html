@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lector Hikvision</title>
+<style>
+:root{--bg:#eef1f3;--surface:#fff;--ink:#14202b;--mut:#5a6b78;--line:#cfd7dd;--acc:#c8141b;--accink:#fff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--bg:#0f161c;--surface:#18222b;--ink:#e8eef2;--mut:#93a3af;--line:#2b3a46;--acc:#ff4a50;--accink:#101010;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:400 16px/1.5 system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:20px 16px 40px}
+h1{font:700 30px/1.1 "Arial Narrow",system-ui,sans-serif;margin:0 0 4px}
+.sub{color:var(--mut);margin:0 0 16px}
+.row{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+button,.btn{font:500 16px system-ui,sans-serif;padding:12px 14px;border-radius:6px;border:1px solid var(--line);background:var(--surface);color:var(--ink);text-decoration:none;display:inline-block}
+button.p,.btn.p{background:var(--acc);color:var(--accink);border-color:var(--acc)}
+button.big{width:100%;padding:22px;font-size:19px}
+input{flex:1;min-width:0;font:500 16px system-ui,sans-serif;padding:12px;border-radius:6px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+.res{background:var(--surface);border:1px solid var(--line);border-left:5px solid var(--acc);border-radius:6px;padding:16px;margin-top:8px}
+.res[hidden]{display:none}
+.model{font:700 28px/1.1 "Arial Narrow",system-ui,sans-serif;word-break:break-all;margin:0 0 6px}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:10px 0}
+dt{color:var(--mut)}dd{margin:0;word-break:break-all}
+.note{color:var(--mut);font-size:14px}
+h2{font:700 21px/1.1 "Arial Narrow",system-ui,sans-serif;margin:26px 0 8px}
+ul{list-style:none;margin:0;padding:0}
+li button{width:100%;text-align:left;border-radius:0;border-width:0 0 1px}
+.err{color:var(--acc)}
+.res h3{font:700 17px system-ui,sans-serif;margin:14px 0 2px}.res p{margin:0 0 4px}.chip{display:inline-block;background:var(--line);padding:2px 10px;border-radius:99px;font-size:14px;font-weight:500}.feat{list-style:disc;padding-left:20px;margin:4px 0}.feat li{margin:2px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Lector de equipos Hikvision</h1>
+<p class="sub">Escaneá el código de barras de la caja o la etiqueta. La app saca el modelo y la fecha de fabricación del número de serie.</p>
+<button class="p big" id="go">Escanear código de barras</button>
+<p class="err" id="err" role="alert"></p>
+<form class="row" onsubmit="return false"><input id="man" placeholder="O escribí el serial o modelo" autocomplete="off" aria-label="Serial o modelo"><button id="ok" type="button">Buscar</button></form>
+<section class="res" id="res" hidden aria-live="polite"></section>
+<h2>Últimos escaneos</h2>
+<ul id="hist"></ul>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let hist=[];
+try{hist=JSON.parse(localStorage.getItem("hik_hist")||"[]")}catch(e){hist=[]}
+const clean=s=>s.trim().toUpperCase().replace(/\s+/g,"");
+const MPT={2:"Full HD, sirve para vigilancia general",3:"más detalle que Full HD",4:"más detalle: permite reconocer personas a mayor distancia",5:"mucho detalle, para zonas amplias",6:"alto detalle, para zonas amplias",8:"4K, máximo detalle; permite ampliar la imagen sin perder nitidez"};
+function sfx(suf,ip){
+ const f=[],a=suf.match(/^I(3|5|8)/);
+ if(/^L/.test(suf))f.push("ColorVu: ve a color también de noche, con luz blanca");
+ else if(/^I/.test(suf))f.push("Visión nocturna infrarroja"+(ip&&a?" (alcance aprox. "+{3:30,5:50,8:80}[a[1]]+" m)":""));
+ if(ip){
+  if(/Z/.test(suf))f.push("Zoom motorizado: el ángulo se ajusta sin subirse a la cámara");
+  if(/U/.test(suf))f.push("Micrófono integrado: también graba audio");
+  if(/W/.test(suf))f.push("WiFi: puede conectarse sin cable de red");
+  if(/S/.test(suf)&&!/W/.test(suf))f.push("Entradas y salidas de audio y alarma");
+  if(/S/.test(suf)&&/W/.test(suf))f.push("Ranura para tarjeta SD");
+ }
+ return f;
+}
+function explain(model){
+ const s=model.replace(/\(.*?\)/g,""),parts=s.replace(/\//g,"-").split("-"),base=parts.slice(0,2).join("-"),suf=parts.slice(2).join("");
+ const T=(tipo,sirve,donde,items)=>({tipo,sirve,donde:donde||null,items:items||[]});
+ const mp=n=>MPT[n]?[n+" MP: "+MPT[n]]:[];
+ let x;
+ const BUL=["Cámara IP tipo bullet (tubo)","Exterior o interior: frentes, patios, entradas y estacionamientos"];
+ if(x=base.match(/^I?DS-2CD([12])(T|\d)(\d)\d/)){
+  const f={0:BUL,T:BUL,1:["Cámara IP tipo domo","Interior o lugares cubiertos: comercios, oficinas, pasillos"],3:["Cámara IP tipo turret (domo fijo)","Interior o exterior bajo techo: comercios, galerías, accesos"]}[x[2]]||["Cámara IP",null];
+  return T(f[0],"Graba video y lo envía por la red para verlo en vivo desde el celular o la PC y revisarlo después en el grabador.",f[1],mp(+x[3]).concat(sfx(suf,true)));
+ }
+ if(/^I?DS-2CD/.test(base))return T("Cámara IP (serie avanzada)","Graba video y lo envía por la red para verlo en vivo desde el celular o la PC y revisarlo después en el grabador.",null,sfx(suf,true));
+ if(/^I?DS-2D[EF]|^I?DS-2SE/.test(base)){
+  const it=[],y=base.match(/([2-8])(\d{2})I?W?$/);
+  if(y&&+y[2]>=4&&+y[2]<=50){it.push(y[1]+" MP y zoom óptico "+(+y[2])+"x: acerca objetos lejanos")}
+  return T("Cámara PTZ (domo motorizado)","Gira, se inclina y hace zoom, controlada a distancia. Sirve para seguir personas o vehículos y cubrir una zona amplia con una sola cámara.","Exterior o interior: playones, estacionamientos, perímetros",it);
+ }
+ if(x=base.match(/^DS-2CE(\d)\d([A-Z])\d/)){
+  const f={1:BUL[0].replace("IP","analógica HD"),5:"Cámara analógica HD tipo domo/turret",7:"Cámara analógica HD tipo domo"}[x[1]]||"Cámara analógica HD";
+  const r={C:"1 MP (720p): imagen básica",D:"2 MP (1080p): Full HD",F:"3 MP: más detalle que Full HD",H:"5 MP: mucho detalle",U:"8 MP (4K): máximo detalle"}[x[2]];
+  return T(f,"Capta video y lo envía por cable coaxil a un grabador DVR. Es la opción para instalaciones que ya tienen cableado analógico.",x[1]==1?BUL[1]:"Interior o lugares cubiertos",(r?[r]:[]).concat(sfx(suf,false)));
+ }
+ if(x=s.match(/^I?DS-\d\d(\d{2})(N|H[A-Z])/)){
+  const ch=+x[1],nvr=x[2]==="N",d=s.match(/-[KI](\d)(?!\d)/),p=s.match(/\/(\d+)P/),it=[];
+  it.push(ch+" canales: puede grabar hasta "+ch+" cámaras");
+  if(d)it.push("Admite "+d[1]+" disco"+(d[1]>1?"s":"")+" duro"+(d[1]>1?"s":""));
+  if(p)it.push("PoE: alimenta "+p[1]+" cámaras por el mismo cable de red");
+  if(/NXI|^IDS/.test(s))it.push("Inteligencia artificial: distingue personas y vehículos y reduce falsas alarmas");
+  return nvr?T("Grabador NVR (para cámaras IP)","Recibe y guarda el video de las cámaras IP. Permite ver todas juntas, buscar grabaciones por fecha y hora, y mirar desde el celular.","En el rack o gabinete, conectado a la red y a un monitor",it)
+   :T("Grabador DVR (para cámaras analógicas HD)","Recibe por cable coaxil el video de las cámaras analógicas HD y lo guarda. Permite verlas juntas, buscar grabaciones y mirar desde el celular.","En el rack o gabinete, conectado a un monitor",it);
+ }
+ if(/^DS-K1T/.test(s))return T("Terminal de control de acceso","Decide quién puede entrar: abre la puerta con rostro, huella o tarjeta y puede registrar la hora de entrada y salida del personal.","En la entrada de una oficina, planta o edificio");
+ if(/^DS-K1A/.test(s))return T("Terminal biométrico de acceso y asistencia","Identifica a cada persona por huella o tarjeta para abrir una puerta o registrar su horario de entrada y salida.","En la entrada de una oficina o planta");
+ if(/^DS-K1/.test(s))return T("Lector de acceso","Lee la tarjeta o clave de cada persona y envía la orden a la controladora para abrir la puerta.","Junto a la puerta que se quiere controlar");
+ if(/^DS-K2/.test(s))return T("Controladora de acceso","Es el cerebro de las puertas: recibe los lectores y ordena abrir o no las cerraduras según los permisos de cada persona.","Dentro de un gabinete, cerca de las puertas controladas");
+ if(/^DS-K[HV]/.test(s))return T("Videoportero","Permite ver y hablar con quien llama a la puerta y abrirle desde el monitor interno o el celular.","Entrada de edificios, casas y oficinas");
+ if(/^DS-PWA/.test(s))return T("Panel de alarma AX PRO","Es la central de la alarma: recibe las señales de sensores, teclados y sirenas, y avisa a la app o a la central de monitoreo cuando algo se activa.","En el interior, cerca del tablero eléctrico o de un lugar protegido");
+ if(/^DS-PK/.test(s))return T("Teclado de alarma AX PRO","Sirve para armar y desarmar la alarma con clave o tarjeta.","Junto a la puerta de entrada");
+ if(/^DS-PS/.test(s))return T("Sirena de alarma AX PRO","Hace sonar una alarma fuerte cuando el panel detecta una intrusión.","Interior o exterior, en un lugar alto");
+ if(/^DS-PD/.test(s))return T("Detector de alarma AX PRO","Detecta un evento (movimiento, apertura de puerta o similar según el modelo) y avisa al panel de alarma.","Ambientes protegidos por la alarma");
+ if(/^DS-P/.test(s))return T("Accesorio del sistema de alarma AX PRO","Equipo complementario de la alarma. Confirmá su función exacta en la ficha técnica.");
+ if(/^DS-3E/.test(s))return T("Switch de red","Conecta entre sí las cámaras, grabadores y otros equipos de la red."+(/\dP/.test(base)?" Este modelo trae PoE: además alimenta las cámaras por el mismo cable.":""),"En el rack o gabinete de red");
+ return null;
+}
+function parse(raw){
+ const s=clean(raw);
+ let model=s,date=null,serial=null;
+ const m=s.match(/^(.*?[A-Z0-9])(20\d{2})(\d{2})(\d{2})([A-Z]{2}[A-Z0-9]*)$/);
+ if(m&&/^I?DS-/.test(m[1])){model=m[1];date=m[4]+"/"+m[3]+"/"+m[2];serial=m[5]}
+ return{raw:s,model,date,serial,hik:/^I?DS-/.test(model),info:explain(model)};
+}
+const q=t=>"https://www.google.com/search?q="+encodeURIComponent(t);
+const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x)e.textContent=x;return e};
+function show(raw){
+ if(!raw||!raw.trim())return;
+ const p=parse(raw),i=p.info,r=$("res");
+ r.hidden=false;r.innerHTML="";
+ r.append(el("p","model",p.model));
+ if(i){
+  r.append(el("span","chip",i.tipo),el("h3",null,"Para qué sirve"),el("p",null,i.sirve));
+  if(i.donde)r.append(el("h3",null,"Dónde se usa"),el("p",null,i.donde));
+  if(i.items.length){r.append(el("h3",null,"Lo que trae"));const u=el("ul","feat");i.items.forEach(t=>u.append(el("li",null,t)));r.append(u)}
+ }else r.append(el("p",null,p.hik?"No pude interpretar este modelo. Abrí la ficha técnica para ver qué es y para qué sirve.":"Este código no parece ser de Hikvision. Probá con el código de la etiqueta del equipo o escribí el modelo."));
+ if(p.date)r.append(el("p","note","Fabricado: "+p.date));
+ const row=el("div","row"),a=el("a","btn p","Ver en Hikvision"),b=el("a","btn","Ficha técnica");
+ a.href=q("site:hikvision.com "+p.model);b.href=q(p.model+" datasheet hikvision");
+ [a,b].forEach(n=>{n.target="_blank";n.rel="noopener"});row.append(a,b);r.append(row);
+ r.append(el("p","note","Interpretación automática según el código del modelo. Confirmá los detalles en la ficha técnica."));
+ hist=[p,...hist.filter(h=>h.raw!==p.raw)].slice(0,15);
+ try{localStorage.setItem("hik_hist",JSON.stringify(hist))}catch(e){}
+ renderHist();
+}
+function renderHist(){
+ const ul=$("hist");ul.innerHTML="";
+ if(!hist.length){ul.innerHTML='<li class="note">Todavía no escaneaste nada.</li>';return}
+ hist.forEach(h=>{const li=document.createElement("li"),b=document.createElement("button");
+  b.textContent=h.model+(h.date?"  ·  "+h.date:"");b.onclick=()=>show(h.raw);li.append(b);ul.append(li)});
+}
+async function scan(){
+ $("err").textContent="";
+ const BS=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.BarcodeScanner;
+ if(!BS){$("err").textContent="El lector solo funciona dentro de la app instalada. Escribí el código a mano.";return}
+ try{
+  const r=await BS.scan();
+  if(r.barcodes&&r.barcodes.length)show(r.barcodes[0].rawValue);
+ }catch(e){
+  if(!/cancel/i.test(String(e&&e.message||e)))$("err").textContent="No se pudo leer el código. Probá de nuevo o escribilo a mano.";
+ }
+}
+$("go").onclick=scan;
+$("ok").onclick=()=>show($("man").value);
+$("man").onkeydown=e=>{if(e.key==="Enter")show($("man").value)};
+renderHist();
+</script>
+</body>
+</html>
