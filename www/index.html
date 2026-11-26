@@ -29,23 +29,25 @@ ul{list-style:none;margin:0;padding:0}
 li button{width:100%;text-align:left;border-radius:0;border-width:0 0 1px}
 .err{color:var(--acc)}
 .res h3{font:700 17px system-ui,sans-serif;margin:14px 0 2px}.res p{margin:0 0 4px}.chip{display:inline-block;background:var(--line);padding:2px 10px;border-radius:99px;font-size:14px;font-weight:500}.feat{list-style:disc;padding-left:20px;margin:4px 0}.feat li{margin:2px 0}
+.tag{font-size:12px;background:var(--line);border-radius:4px;padding:1px 6px;margin-right:6px}.code{word-break:break-all}.h .tagb{padding:1px 8px;font-size:12px;margin-right:6px;background:var(--line);border-width:0}.h{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}.h button{width:auto;border-width:1px;padding:6px 10px;font-size:14px}
 </style>
 </head>
 <body>
 <main>
 <h1>Lector de equipos Hikvision</h1>
-<p class="sub">Escaneá el código de barras de la caja o la etiqueta. La app saca el modelo y la fecha de fabricación del número de serie.</p>
-<button class="p big" id="go">Escanear código de barras</button>
+<p class="sub">Escaneá los códigos de la etiqueta (hasta 4). Se arma una fila por equipo y la planilla se descarga cuando quieras.</p>
+<button class="p big" id="go">Escanear etiqueta</button>
+<p class="note">La cámara se vuelve a abrir sola hasta leer los 4 códigos. Para parar, tocá atrás.</p>
 <p class="err" id="err" role="alert"></p>
-<form class="row" onsubmit="return false"><input id="man" placeholder="O escribí el serial o modelo" autocomplete="off" aria-label="Serial o modelo"><button id="ok" type="button">Buscar</button></form>
+<section class="res" id="cur" hidden></section>
 <section class="res" id="res" hidden aria-live="polite"></section>
-<h2>Últimos escaneos</h2>
+<form class="row" onsubmit="return false"><input id="man" placeholder="O escribí un código a mano" autocomplete="off" aria-label="Código"><button id="ok" type="button">Agregar</button></form>
+<h2>Planilla (<span id="n">0</span> equipos)</h2>
+<div class="row"><button class="p" id="xl">Descargar planilla</button><button id="clr">Vaciar</button></div>
 <ul id="hist"></ul>
 </main>
+<script src="xlsx.full.min.js"></script>
 <script>
-const $=id=>document.getElementById(id);
-let hist=[];
-try{hist=JSON.parse(localStorage.getItem("hik_hist")||"[]")}catch(e){hist=[]}
 const clean=s=>s.trim().toUpperCase().replace(/\s+/g,"");
 const MPT={2:"Full HD, sirve para vigilancia general",3:"más detalle que Full HD",4:"más detalle: permite reconocer personas a mayor distancia",5:"mucho detalle, para zonas amplias",6:"alto detalle, para zonas amplias",8:"4K, máximo detalle; permite ampliar la imagen sin perder nitidez"};
 function sfx(suf,ip){
@@ -73,8 +75,8 @@ function explain(model){
  }
  if(/^I?DS-2CD/.test(base))return T("Cámara IP (serie avanzada)","Graba video y lo envía por la red para verlo en vivo desde el celular o la PC y revisarlo después en el grabador.",null,sfx(suf,true));
  if(/^I?DS-2D[EF]|^I?DS-2SE/.test(base)){
-  const it=[],y=base.match(/([2-8])(\d{2})I?W?$/);
-  if(y&&+y[2]>=4&&+y[2]<=50){it.push(y[1]+" MP y zoom óptico "+(+y[2])+"x: acerca objetos lejanos")}
+  const it=[],y=base.match(/([1-8])(\d{2})I?W?$/);
+  if(y&&+y[2]>=4&&+y[2]<=50){it.push((y[1]==1?"1.3":y[1])+" MP y zoom óptico "+(+y[2])+"x: acerca objetos lejanos")}
   return T("Cámara PTZ (domo motorizado)","Gira, se inclina y hace zoom, controlada a distancia. Sirve para seguir personas o vehículos y cubrir una zona amplia con una sola cámara.","Exterior o interior: playones, estacionamientos, perímetros",it);
  }
  if(x=base.match(/^DS-2CE(\d)\d([A-Z])\d/)){
@@ -105,54 +107,154 @@ function explain(model){
  return null;
 }
 function parse(raw){
- const s=clean(raw);
+ const s0=clean(raw),k=s0.search(/I?DS-[A-Z0-9]/),s=k>0?s0.slice(k):s0;
  let model=s,date=null,serial=null;
  const m=s.match(/^(.*?[A-Z0-9])(20\d{2})(\d{2})(\d{2})([A-Z]{2}[A-Z0-9]*)$/);
  if(m&&/^I?DS-/.test(m[1])){model=m[1];date=m[4]+"/"+m[3]+"/"+m[2];serial=m[5]}
- return{raw:s,model,date,serial,hik:/^I?DS-/.test(model),info:explain(model)};
+ return{raw:s0,model,date,serial,hik:/^I?DS-/.test(model),info:explain(model)};
 }
-const q=t=>"https://www.google.com/search?q="+encodeURIComponent(t);
+const $=id=>document.getElementById(id);
+let rows=[],cur=[],busy=false,noteTxt="",manualModel="",cat={};
+const SEED={"301308412":"DS-2DE4120I-D","6954273632533":"DS-2DE4120I-D"};
+try{cat=JSON.parse(localStorage.getItem("hik_cat")||"{}")}catch(e){cat={}}
+for(const k in SEED)if(!cat[k])cat[k]=SEED[k];
+const persistCat=()=>{try{localStorage.setItem("hik_cat",JSON.stringify(cat))}catch(e){}};
+try{rows=JSON.parse(localStorage.getItem("hik_rows")||"[]")}catch(e){rows=[]}
+const persist=()=>{try{localStorage.setItem("hik_rows",JSON.stringify(rows))}catch(e){}};
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x)e.textContent=x;return e};
-function show(raw){
- if(!raw||!raw.trim())return;
- const p=parse(raw),i=p.info,r=$("res");
+const err=t=>{$("err").textContent=t||""};
+const pad=n=>String(n).padStart(2,"0");
+const now=()=>{const d=new Date();return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())+" "+pad(d.getHours())+":"+pad(d.getMinutes())};
+const MACRE=/\b[0-9A-F]{2}([:\-][0-9A-F]{2}){5}\b|\b[0-9A-F]{12}\b/;
+const ROLES=["Serie","Cód. modelo","MAC","QR","Otro"];
+function kindOf(raw,fmt){
+ const s=clean(raw);
+ if(/QR/i.test(fmt||""))return"QR";
+ if(s.search(/I?DS-[A-Z0-9]/)>=0)return"Serie";
+ if(/^([0-9A-F]{2}[:\-]?){5}[0-9A-F]{2}$/.test(s)&&/[A-F:\-]/.test(s))return"MAC";
+ if(/EAN|UPC/i.test(fmt||"")||/^\d{13}$/.test(s)||/^30\d{7}$/.test(s))return"Cód. modelo";
+ if(/^[0-9A-Z]{6,20}$/.test(s))return"Serie";
+ return"Otro";
+}
+function derive(){
+ const d={model:"",date:"",mac:"",info:null,fromCat:false};
+ for(const c of cur){
+  const s=clean(c.raw);
+  if(!d.model){
+   const t=(s.match(/I?DS-[A-Z0-9\-\/]+/)||[""])[0];
+   if(t){const p=parse(t);if(p.hik){d.model=p.model;d.date=p.date||"";d.info=p.info}}
+  }
+  if(!d.mac){d.mac=c.kind==="MAC"?s:(c.kind==="QR"?(s.match(MACRE)||[""])[0]:"")}
+ }
+ if(!d.model)for(const c of cur){const m=cat[clean(c.raw)];if(m){d.model=m;d.fromCat=true;break}}
+ if(!d.model&&manualModel)d.model=manualModel;
+ if(d.model&&!d.info)d.info=explain(d.model);
+ return d;
+}
+function addCode(raw,fmt){
+ const s=(raw||"").trim();
+ if(!s||cur.some(c=>c.raw===s))return false;
+ cur.push({raw:s,fmt:fmt||"",kind:kindOf(s,fmt)});
+ renderCur();showInfo();return true;
+}
+function setModel(v){
+ const m=clean(v||"");
+ if(!m)return;
+ manualModel=m;
+ cur.filter(c=>c.kind==="Cód. modelo").forEach(c=>{cat[clean(c.raw)]=m});
+ persistCat();renderCur();showInfo();
+}
+function renderCur(){
+ const r=$("cur");
+ if(!cur.length){r.hidden=true;r.innerHTML="";return}
  r.hidden=false;r.innerHTML="";
- r.append(el("p","model",p.model));
- if(i){
-  r.append(el("span","chip",i.tipo),el("h3",null,"Para qué sirve"),el("p",null,i.sirve));
-  if(i.donde)r.append(el("h3",null,"Dónde se usa"),el("p",null,i.donde));
-  if(i.items.length){r.append(el("h3",null,"Lo que trae"));const u=el("ul","feat");i.items.forEach(t=>u.append(el("li",null,t)));r.append(u)}
- }else r.append(el("p",null,p.hik?"No pude interpretar este modelo. Abrí la ficha técnica para ver qué es y para qué sirve.":"Este código no parece ser de Hikvision. Probá con el código de la etiqueta del equipo o escribí el modelo."));
- if(p.date)r.append(el("p","note","Fabricado: "+p.date));
- const row=el("div","row"),a=el("a","btn p","Ver en Hikvision"),b=el("a","btn","Ficha técnica");
- a.href=q("site:hikvision.com "+p.model);b.href=q(p.model+" datasheet hikvision");
- [a,b].forEach(n=>{n.target="_blank";n.rel="noopener"});row.append(a,b);r.append(row);
+ r.append(el("h3",null,"Etiqueta actual: "+cur.length+" de 4 códigos"));
+ r.append(el("p","note","Tocá el nombre de cada código para cambiar qué es (Serie, Cód. modelo, MAC, QR u Otro)."));
+ const u=el("ul","codes");
+ cur.forEach((c,i)=>{const li=el("li","h"),s=el("span","code"),t=el("button","tagb",c.kind);
+  t.onclick=()=>{c.kind=ROLES[(ROLES.indexOf(c.kind)+1)%ROLES.length];renderCur();showInfo()};
+  s.append(t,document.createTextNode(c.raw));
+  const x=el("button",null,"Quitar");x.onclick=()=>{cur.splice(i,1);renderCur();showInfo()};li.append(s,x);u.append(li)});
+ r.append(u);
+ if(!derive().model){
+  r.append(el("p","note","Estos códigos no dicen el modelo. Escribí el que figura en la etiqueta junto a “Model”; la app lo recuerda para los próximos equipos iguales."));
+  const row=el("div","row"),m=el("input"),b=el("button",null,"Usar este modelo");
+  m.placeholder="Ej. DS-2DE4120I-D";m.setAttribute("aria-label","Modelo");b.onclick=()=>setModel(m.value);m.onkeydown=e=>{if(e.key==="Enter")setModel(m.value)};
+  row.append(m,b);r.append(row);
+ }
+ const n=el("input");n.placeholder="Nota (cliente, lugar…) opcional";n.value=noteTxt;n.setAttribute("aria-label","Nota");n.oninput=()=>{noteTxt=n.value};
+ const row=el("div","row"),g=el("button","p","Guardar equipo en la planilla"),d=el("button",null,"Descartar");
+ g.onclick=saveRow;d.onclick=()=>{cur=[];noteTxt="";manualModel="";renderCur();showInfo()};
+ row.append(n);r.append(row);
+ const row2=el("div","row");row2.append(g,d);r.append(row2);
+}
+function showInfo(){
+ const r=$("res"),d=derive(),i=d.info;
+ if(!i){r.hidden=true;r.innerHTML="";return}
+ r.hidden=false;r.innerHTML="";
+ r.append(el("p","model",d.model),el("span","chip",i.tipo),el("h3",null,"Para qué sirve"),el("p",null,i.sirve));
+ if(i.donde)r.append(el("h3",null,"Dónde se usa"),el("p",null,i.donde));
+ if(i.items.length){r.append(el("h3",null,"Lo que trae"));const u=el("ul","feat");i.items.forEach(t=>u.append(el("li",null,t)));r.append(u)}
+ if(d.fromCat)r.append(el("p","note","Modelo reconocido por el código de producto de la etiqueta."));
+ if(d.date)r.append(el("p","note","Fabricado: "+d.date));
  r.append(el("p","note","Interpretación automática según el código del modelo. Confirmá los detalles en la ficha técnica."));
- hist=[p,...hist.filter(h=>h.raw!==p.raw)].slice(0,15);
- try{localStorage.setItem("hik_hist",JSON.stringify(hist))}catch(e){}
- renderHist();
 }
-function renderHist(){
+function saveRow(){
+ if(!cur.length)return;
+ const d=derive(),by=k=>cur.filter(c=>c.kind===k).map(c=>c.raw).join(" | "),ser=by("Serie");
+ if(ser&&rows.some(r=>r.ser===ser)&&!confirm("Este equipo ya está en la planilla. ¿Agregarlo igual?"))return;
+ rows.push({t:now(),model:d.model,tipo:d.info?d.info.tipo:"",sirve:d.info?d.info.sirve:"",car:d.info?d.info.items.join("; "):"",ser,cm:by("Cód. modelo"),fab:d.date,mac:d.mac||by("MAC"),qr:by("QR"),oth:by("Otro"),nota:noteTxt});
+ cur=[];noteTxt="";manualModel="";persist();renderCur();showInfo();renderRows();err("");
+}
+function renderRows(){
+ $("n").textContent=rows.length;
  const ul=$("hist");ul.innerHTML="";
- if(!hist.length){ul.innerHTML='<li class="note">Todavía no escaneaste nada.</li>';return}
- hist.forEach(h=>{const li=document.createElement("li"),b=document.createElement("button");
-  b.textContent=h.model+(h.date?"  ·  "+h.date:"");b.onclick=()=>show(h.raw);li.append(b);ul.append(li)});
+ if(!rows.length){ul.append(el("li","note","Todavía no hay equipos cargados."));return}
+ rows.slice().reverse().forEach(r=>{const i=rows.indexOf(r),li=el("li","h"),s=el("span","code",(r.model||r.ser||r.cm||r.qr||"Equipo")+"  ·  "+r.t),x=el("button",null,"Borrar");
+  x.onclick=()=>{if(confirm("¿Borrar esta fila?")){rows.splice(i,1);persist();renderRows()}};li.append(s,x);ul.append(li)});
 }
-async function scan(){
- $("err").textContent="";
+async function scanLoop(){
+ if(busy)return;busy=true;err("");
  const BS=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.BarcodeScanner;
- if(!BS){$("err").textContent="El lector solo funciona dentro de la app instalada. Escribí el código a mano.";return}
+ if(!BS){err("El lector solo funciona dentro de la app instalada. Escribí el código a mano.");busy=false;return}
  try{
-  const r=await BS.scan();
-  if(r.barcodes&&r.barcodes.length)show(r.barcodes[0].rawValue);
- }catch(e){
-  if(!/cancel/i.test(String(e&&e.message||e)))$("err").textContent="No se pudo leer el código. Probá de nuevo o escribilo a mano.";
+  let tries=0;
+  while(cur.length<4&&tries++<8){
+   const r=await BS.scan(),b=r.barcodes&&r.barcodes[0];
+   if(!b)break;
+   addCode(b.rawValue,b.format);
+  }
+ }catch(e){if(!/cancel/i.test(String(e&&e.message||e)))err("No se pudo leer el código. Probá de nuevo o escribilo a mano.")}
+ busy=false;
+}
+async function deliver(name,b64,mime){
+ const P=window.Capacitor&&window.Capacitor.Plugins;
+ if(P&&P.Filesystem&&P.Share){
+  const f=await P.Filesystem.writeFile({path:name,data:b64,directory:"CACHE"});
+  await P.Share.share({title:name,url:f.uri,dialogTitle:"Guardar o enviar la planilla"});
+ }else{
+  const bin=atob(b64),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
+  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([u],{type:mime}));a.download=name;document.body.append(a);a.click();a.remove();
  }
 }
-$("go").onclick=scan;
-$("ok").onclick=()=>show($("man").value);
-$("man").onkeydown=e=>{if(e.key==="Enter")show($("man").value)};
-renderHist();
+async function exportXlsx(){
+ err("");
+ if(!rows.length){err("Todavía no hay equipos cargados.");return}
+ if(!window.XLSX){err("No se pudo armar la planilla (falta el componente de Excel).");return}
+ const H=["Fecha y hora","Modelo","Tipo de equipo","Para qué sirve","Características","Serie","Cód. modelo (EAN / Material)","Fabricado","MAC","QR","Otros códigos","Nota"];
+ const A=[H].concat(rows.map(r=>[r.t,r.model,r.tipo,r.sirve,r.car,r.ser,r.cm,r.fab,r.mac,r.qr,r.oth,r.nota]));
+ const ws=XLSX.utils.aoa_to_sheet(A);ws["!cols"]=[16,22,26,50,50,30,28,12,18,30,22,20].map(w=>({wch:w}));
+ const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Equipos");
+ const wc=XLSX.utils.aoa_to_sheet([["Código","Modelo"]].concat(Object.keys(cat).map(k=>[k,cat[k]])));wc["!cols"]=[{wch:20},{wch:24}];XLSX.utils.book_append_sheet(wb,wc,"Catálogo");
+ try{await deliver("Equipos_Hikvision_"+now().slice(0,10)+".xlsx",XLSX.write(wb,{bookType:"xlsx",type:"base64"}),"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+ catch(e){if(!/cancel/i.test(String(e&&e.message||e)))err("No se pudo guardar la planilla.")}
+}
+$("go").onclick=scanLoop;
+$("xl").onclick=exportXlsx;
+$("clr").onclick=()=>{if(rows.length&&confirm("¿Vaciar toda la planilla? Esto no se puede deshacer.")){rows=[];persist();renderRows()}};
+const addMan=()=>{if(addCode($("man").value,"MANUAL"))$("man").value=""};
+$("ok").onclick=addMan;$("man").onkeydown=e=>{if(e.key==="Enter")addMan()};
+renderRows();
 </script>
 </body>
 </html>
